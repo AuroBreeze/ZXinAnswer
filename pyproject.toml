@@ -5,6 +5,7 @@ description = "z-xin.net 作业自动答题脚本"
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.34.2",
+    "rich>=15.0.0",
 ]
 
 [dependency-groups]

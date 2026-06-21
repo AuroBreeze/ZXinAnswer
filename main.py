@@ -1,12 +1,18 @@
-import json
 import os
 import re
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar
-from typing import Any
+from typing import Any, Callable
 
 import requests
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+console = Console()
 
 
 LOGIN_URL = "https://auth.z-xin.net/api/portal/auth/login"
@@ -33,6 +39,8 @@ class ApiError(RuntimeError):
     pass
 
 
+# ---------- credentials & session ----------
+
 def load_credentials() -> tuple[str, str]:
     username = os.environ.get("ZXIN_USERNAME")
     password = os.environ.get("ZXIN_PASSWORD")
@@ -46,9 +54,9 @@ def make_session(cookie_file: str = COOKIE_FILE) -> requests.Session:
     session.cookies = MozillaCookieJar(cookie_file)
     try:
         session.cookies.load(ignore_discard=True, ignore_expires=True)
-        print(f"已加载 cookie: {cookie_file}")
+        console.print(f"[green]✓[/green] 已加载 cookie: {cookie_file}")
     except FileNotFoundError:
-        print("未找到本地 cookie，将重新登录")
+        console.print("[yellow]→[/yellow] 未找到本地 cookie，将重新登录")
 
     session.headers.update(
         {
@@ -63,6 +71,8 @@ def make_session(cookie_file: str = COOKIE_FILE) -> requests.Session:
     return session
 
 
+# ---------- API & business logic ----------
+
 def assert_api_ok(response: requests.Response) -> dict[str, Any]:
     response.raise_for_status()
     try:
@@ -76,9 +86,11 @@ def assert_api_ok(response: requests.Response) -> dict[str, Any]:
     code = data.get("code")
     success = data.get("success")
     if code is not None and code not in (0, 200, "0", "200") and success is not True:
-        raise ApiError(f"业务错误 code={code!r} msg={data.get('msg')!r}")
+        msg = data.get("msg") or data.get("message")
+        raise ApiError(f"业务错误 code={code!r} msg={msg!r}")
     if success is False:
-        raise ApiError(f"业务失败 success=False msg={data.get('msg')!r}")
+        msg = data.get("msg") or data.get("message")
+        raise ApiError(f"业务失败 success=False msg={msg!r}")
     return data
 
 
@@ -109,12 +121,11 @@ def ensure_logged_in(
     session: requests.Session, username: str, password: str
 ) -> None:
     if is_session_alive(session):
-        print("cookie 仍有效，跳过登录")
+        console.print("[green]✓[/green] cookie 有效，跳过登录")
         return
-    print("cookie 失效，重新登录")
-    login_data = login(session, username, password)
-    print(f"登录响应: {json.dumps(login_data, ensure_ascii=False)[:300]}")
-    print(f"cookie 已保存到: {COOKIE_FILE}")
+    console.print("[yellow]→[/yellow] cookie 失效，重新登录")
+    login(session, username, password)
+    console.print(f"[green]✓[/green] 登录成功，cookie 已保存到 {COOKIE_FILE}")
 
 
 def get_classroom_data(session: requests.Session) -> list[dict]:
@@ -210,115 +221,10 @@ def is_correct_answer(submit_data: dict) -> bool:
     return score is not None and score != 0
 
 
-def select_item(items: list[dict], label_func, prompt: str) -> dict:
-    for index, item in enumerate(items, start=1):
-        print(f"{index}. {label_func(item)}")
-    while True:
-        value = input(prompt).strip()
-        if value.isdigit():
-            index = int(value)
-            if 1 <= index <= len(items):
-                return items[index - 1]
-        print("请输入有效序号")
-
-
-def submit_until_correct(
-    session: requests.Session, homework_id: str, question: dict
-) -> tuple[str | None, dict]:
-    last_data: dict[str, Any] = {}
-    question_id = question["questionId"]
-    options = question.get("options", [])
-    for index, option in enumerate(options, start=1):
-        mark = option["mark"]
-        data = submit_answer_record(session, homework_id, question_id, mark)
-        last_data = data
-        print(f"尝试 {index}/{len(options)}：{mark} | {answer_status_text(data)}")
-        if is_correct_answer(data):
-            return mark, data
-    return None, last_data
-
-
-def answer_all_questions(
-    session: requests.Session, homework_id: str, questions: list[dict]
-) -> list[dict]:
-    results = []
-    for index, question in enumerate(questions, start=1):
-        print(f"开始作答 {index}/{len(questions)}：{question_label(question)}")
-        mark, data = submit_until_correct(session, homework_id, question)
-        if mark:
-            print(f"第{question.get('questionIndex', index)}题正确答案: {mark}")
-        else:
-            print(f"第{question.get('questionIndex', index)}题未找到正确答案")
-        print(final_answer_status_text(data))
-        results.append({"question": question, "mark": mark, "data": data})
-    return results
-
-
 def strip_html(value: str | None) -> str:
     if not value:
         return ""
     return re.sub(r"<[^>]+>", "", value).strip()
-
-
-def course_label(course: dict) -> str:
-    return (
-        f"{course.get('courseName', '')} - {course.get('teacherName', '')} "
-        f"(未完成: {course.get('unfinishedCount', '0')})"
-    )
-
-
-def homework_status_text(homework: dict) -> str:
-    score = homework.get("answerSheetScore", "未知")
-    answer_progress = homework.get("answerProgress", "未知")
-    correct_progress = homework.get("correctProgress", "未知")
-    return f"得分: {score} | 作答: {answer_progress}% | 正确: {correct_progress}%"
-
-
-def homework_label(homework: dict) -> str:
-    name = homework.get("name") or homework.get("id", "未知作业")
-    return f"{name} | {homework_status_text(homework)}"
-
-
-def answer_status_text(submit_data: dict) -> str:
-    answer_record = submit_data.get("data", {}).get("answerRecord", {})
-    answer_sheet = submit_data.get("data", {}).get("answerSheet", {})
-    question_score = answer_record.get("answerRecordScore", "未知")
-    sheet_score = answer_sheet.get("score", "未知")
-    answer_progress = answer_sheet.get("answerProgress", "未知")
-    correct_progress = answer_sheet.get("correctProgress", "未知")
-    return (
-        f"本题得分: {question_score} | 作业总分: {sheet_score} | "
-        f"作答: {answer_progress}% | 正确: {correct_progress}%"
-    )
-
-
-def final_answer_status_text(submit_data: dict) -> str:
-    return f"最终状态: {answer_status_text(submit_data)}"
-
-
-def answer_summary_text(results: list[dict]) -> str:
-    lines = ["答题汇总:"]
-    success_count = 0
-    for result in results:
-        question = result["question"]
-        mark = result["mark"]
-        question_index = question.get("questionIndex", "?")
-        if mark:
-            success_count += 1
-            answer_text = f"正确答案: {mark}"
-        else:
-            answer_text = "未找到正确答案"
-        lines.append(
-            f"第{question_index}题 | {answer_text} | {answer_status_text(result['data'])}"
-        )
-    lines.append(f"总计：成功 {success_count} / {len(results)}，失败 {len(results) - success_count}")
-    return "\n".join(lines)
-
-
-def question_label(question: dict) -> str:
-    marks = "/".join(option.get("mark", "") for option in question.get("options", []))
-    content = strip_html(question.get("content"))
-    return f"第{question.get('questionIndex', '?')}题 {content} [{marks}]"
 
 
 def find_latest_unprocessed_question(
@@ -331,13 +237,179 @@ def find_latest_unprocessed_question(
     return None
 
 
+# ---------- display helpers ----------
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def format_time(value: str | None) -> str:
+    dt = parse_iso(value)
+    if dt is None:
+        return "?"
+    local = dt.astimezone()
+    return local.strftime("%m-%d %H:%M")
+
+
+def deadline_cell(homework: dict) -> Text:
+    deadline = parse_iso(homework.get("deadline"))
+    if deadline is None:
+        return Text("无截止", style="dim")
+    now = datetime.now(timezone.utc)
+    if deadline <= now:
+        return Text(f"{format_time(homework.get('deadline'))} 已截止", style="bold red")
+    remaining = deadline - now
+    if remaining <= timedelta(hours=1):
+        return Text(f"{format_time(homework.get('deadline'))} 即将截止", style="bold red")
+    if remaining <= timedelta(hours=24):
+        return Text(f"{format_time(homework.get('deadline'))} {remaining.seconds // 3600}h后", style="yellow")
+    return Text(format_time(homework.get("deadline")), style="green")
+
+
+def question_label(question: dict) -> str:
+    marks = "/".join(option.get("mark", "") for option in question.get("options", []))
+    content = strip_html(question.get("content"))
+    return f"第{question.get('questionIndex', '?')}题 {content} [{marks}]"
+
+
+def progress_text(data: dict) -> str:
+    answer_record = data.get("data", {}).get("answerRecord", {})
+    answer_sheet = data.get("data", {}).get("answerSheet", {})
+    return (
+        f"本题 {answer_record.get('answerRecordScore', '?')} · "
+        f"总分 {answer_sheet.get('score', '?')} · "
+        f"作答 {answer_sheet.get('answerProgress', '?')}%"
+    )
+
+
+def select_item(
+    items: list[dict],
+    columns: list[tuple[str, Callable[[dict], object]]],
+    prompt: str,
+) -> dict:
+    table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=False)
+    table.add_column("#", style="cyan", justify="right", width=3)
+    for header, _ in columns:
+        table.add_column(header)
+    for index, item in enumerate(items, start=1):
+        row = [str(index)] + [col[1](item) for col in columns]
+        table.add_row(*row)
+    console.print(table)
+    while True:
+        value = console.input(prompt).strip()
+        if value.isdigit():
+            index = int(value)
+            if 1 <= index <= len(items):
+                return items[index - 1]
+        console.print("[red]请输入有效序号[/red]")
+
+
+def submit_until_correct(
+    session: requests.Session, homework_id: str, question: dict
+) -> tuple[str | None, dict]:
+    last_data: dict[str, Any] = {}
+    question_id = question["questionId"]
+    options = question.get("options", [])
+    for index, option in enumerate(options, start=1):
+        mark = option["mark"]
+        data = submit_answer_record(session, homework_id, question_id, mark)
+        last_data = data
+        correct = is_correct_answer(data)
+        icon = "[green]✓[/green]" if correct else "[red]·[/red]"
+        console.print(
+            f"  [dim]尝试 {index}/{len(options)}[/dim] → [bold]{mark}[/bold] "
+            f"{icon} [dim]{progress_text(data)}[/dim]"
+        )
+        if correct:
+            return mark, data
+    return None, last_data
+
+
+def answer_all_questions(
+    session: requests.Session, homework_id: str, questions: list[dict]
+) -> list[dict]:
+    results = []
+    total = len(questions)
+    for index, question in enumerate(questions, start=1):
+        qidx = question.get("questionIndex", index)
+        content = strip_html(question.get("content"))
+        marks = "/".join(o.get("mark", "") for o in question.get("options", []))
+        console.print()
+        console.print(Panel.fit(
+            f"[bold]第 {qidx} 题[/bold]  {content}  [dim][{marks}][/dim]"
+            f"  [dim]({index}/{total})[/dim]",
+            border_style="cyan",
+        ))
+        mark, data = submit_until_correct(session, homework_id, question)
+        if mark:
+            console.print(f"  [green]✓ 正确答案: [bold]{mark}[/bold][/green]")
+        else:
+            console.print(f"  [red]✗ 未找到正确答案[/red]")
+        results.append({"question": question, "mark": mark, "data": data})
+    return results
+
+
+def print_summary(results: list[dict]) -> None:
+    table = Table(
+        title="[bold]答题汇总[/bold]",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("题号", style="cyan", justify="right")
+    table.add_column("答案", style="bold")
+    table.add_column("状态")
+    success_count = 0
+    for result in results:
+        question = result["question"]
+        qidx = str(question.get("questionIndex", "?"))
+        if result["mark"]:
+            success_count += 1
+            table.add_row(qidx, result["mark"], "[green]✓ 正确[/green]")
+        else:
+            table.add_row(qidx, "-", "[red]✗ 未找到[/red]")
+    console.print()
+    console.print(table)
+    total = len(results)
+    if total == 0:
+        return
+    if success_count == total:
+        color = "green"
+    elif success_count > 0:
+        color = "yellow"
+    else:
+        color = "red"
+    console.print(
+        f"[{color}]总计：成功 {success_count} / {total}，"
+        f"失败 {total - success_count}[/{color}]"
+    )
+
+
+# ---------- modes ----------
+
 def run_select_question_mode(session: requests.Session, classroom_id: str) -> None:
     homeworks = get_all_homeworks(session, classroom_id)
-    homework = select_item(homeworks, homework_label, "请选择作业序号: ")
+    console.print("\n[bold]作业列表[/bold]")
+    homework = select_item(
+        homeworks,
+        [
+            ("作业名", lambda h: h.get("name") or h.get("id", "未知")),
+            ("得分", lambda h: str(h.get("answerSheetScore", "?"))),
+            ("作答", lambda h: f"{h.get('answerProgress', '?')}%"),
+            ("创建时间", lambda h: format_time(h.get("createTime"))),
+            ("截止时间", deadline_cell),
+        ],
+        "[bold cyan]请选择作业序号: [/bold cyan]",
+    )
     detail_data = get_homework_detail(session, homework["id"])
     questions = extract_questions(detail_data)
     results = answer_all_questions(session, homework["id"], questions)
-    print(answer_summary_text(results))
+    print_summary(results)
 
 
 def run_wait_latest_mode(
@@ -355,32 +427,42 @@ def run_wait_latest_mode(
             questions = extract_questions(detail_data)
             question = find_latest_unprocessed_question(questions, processed_question_ids)
             if question:
+                qidx = question.get("questionIndex", "?")
+                content = strip_html(question.get("content"))
+                console.print(f"\n[bold cyan]▶ 新题[/bold cyan] 第{qidx}题 {content}")
                 mark, data = submit_until_correct(session, homework_id, question)
                 processed_question_ids.add(question["questionId"])
                 if mark:
-                    print(f"最新题正确答案: {mark}")
+                    console.print(f"  [green]✓ 正确答案: [bold]{mark}[/bold][/green]")
                 else:
-                    print("最新题未找到正确答案")
-                print(final_answer_status_text(data))
-                print(json.dumps(data, ensure_ascii=False, indent=2))
+                    console.print(f"  [red]✗ 未找到正确答案[/red]")
             else:
-                print("暂无新题，继续等待")
+                console.print("[dim]暂无新题，继续等待...[/dim]")
         except requests.RequestException as exc:
-            print(f"网络异常，继续轮询: {exc}")
+            console.print(f"[yellow]⚠ 网络异常，继续轮询: {exc}[/yellow]")
         except RuntimeError as exc:
-            print(f"等待中: {exc}")
+            console.print(f"[yellow]⚠ 等待中: {exc}[/yellow]")
         time.sleep(poll_seconds)
 
 
 def select_mode() -> dict:
     return select_item(
         [{"id": "1", "name": "选择作业自动答完"}, {"id": "2", "name": "等待最新题目"}],
-        lambda item: item["name"],
-        "请选择模式序号: ",
+        [("模式", lambda item: item["name"])],
+        "[bold cyan]请选择模式序号: [/bold cyan]",
     )
 
 
+def print_banner() -> None:
+    console.print(Panel(
+        "[bold cyan]z-xin 作业助手[/bold cyan]\n[dim]自动答题 · 课程作业 · 实时轮询[/dim]",
+        border_style="cyan",
+        expand=False,
+    ))
+
+
 def main() -> int:
+    print_banner()
     try:
         username, password = load_credentials()
         session = make_session()
@@ -389,7 +471,16 @@ def main() -> int:
         courses = get_classroom_data(session)
         if not courses:
             raise RuntimeError("没有可选择的课程")
-        course = select_item(courses, course_label, "请选择课程序号: ")
+        console.print("\n[bold]课程列表[/bold]")
+        course = select_item(
+            courses,
+            [
+                ("课程", lambda c: c.get("courseName", "")),
+                ("教师", lambda c: c.get("teacherName", "")),
+                ("未完成", lambda c: str(c.get("unfinishedCount", 0))),
+            ],
+            "[bold cyan]请选择课程序号: [/bold cyan]",
+        )
         mode = select_mode()
         if mode["id"] == "1":
             run_select_question_mode(session, course["id"])
@@ -397,10 +488,10 @@ def main() -> int:
             run_wait_latest_mode(session, course["id"])
         return 0
     except requests.RequestException as exc:
-        print(f"请求失败: {exc}", file=sys.stderr)
+        console.print(f"[red]✗ 请求失败: {exc}[/red]")
         return 1
     except (RuntimeError, ApiError) as exc:
-        print(exc, file=sys.stderr)
+        console.print(f"[red]✗ {exc}[/red]")
         return 1
 
 

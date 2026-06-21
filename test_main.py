@@ -1,21 +1,23 @@
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 import requests
+from rich.text import Text
 
 import main
 from main import (
     ApiError,
-    answer_summary_text,
-    answer_status_text,
     assert_api_ok,
+    deadline_cell,
     extract_homework_records,
     extract_questions,
-    final_answer_status_text,
     find_latest_unprocessed_question,
-    homework_label,
+    format_time,
     is_correct_answer,
+    parse_iso,
+    progress_text,
     question_label,
     strip_html,
 )
@@ -181,66 +183,88 @@ class TestQuestionLabel:
         assert question_label(q) == "第1题 y []"
 
 
-class TestHomeworkLabel:
-    def test_with_name(self):
-        hw = {"name": "作业1", "answerSheetScore": 80, "answerProgress": 100, "correctProgress": 80}
-        assert "作业1" in homework_label(hw)
-        assert "80" in homework_label(hw)
-
-    def test_fallback_to_id(self):
-        hw = {"id": "h123", "answerSheetScore": 0, "answerProgress": 0, "correctProgress": 0}
-        assert "h123" in homework_label(hw)
-
-
-class TestAnswerStatusText:
+class TestProgressText:
     def test_normal(self):
         data = {
             "data": {
                 "answerRecord": {"answerRecordScore": 5},
-                "answerSheet": {"score": 80, "answerProgress": 50, "correctProgress": 40},
+                "answerSheet": {"score": 80, "answerProgress": 50},
             }
         }
-        text = answer_status_text(data)
-        assert "5" in text
-        assert "80" in text
-        assert "50%" in text
+        text = progress_text(data)
+        assert "本题 5" in text
+        assert "总分 80" in text
+        assert "作答 50%" in text
 
     def test_empty(self):
-        text = answer_status_text({})
-        assert "未知" in text
+        text = progress_text({})
+        assert "?" in text
+
+    def test_missing_record(self):
+        text = progress_text({"data": {"answerSheet": {"score": 10}}})
+        assert "总分 10" in text
+        assert "本题 ?" in text
 
 
-class TestFinalAnswerStatusText:
-    def test_prefix(self):
-        text = final_answer_status_text({})
-        assert text.startswith("最终状态:")
+class TestParseIso:
+    def test_normal(self):
+        dt = parse_iso("2026-06-18T12:51:40.000Z")
+        assert dt is not None
+        assert dt.tzinfo is not None
+        assert dt.year == 2026 and dt.month == 6 and dt.day == 18
+
+    def test_none(self):
+        assert parse_iso(None) is None
+
+    def test_empty(self):
+        assert parse_iso("") is None
+
+    def test_invalid(self):
+        assert parse_iso("not a date") is None
 
 
-class TestAnswerSummaryText:
-    def test_all_correct(self):
-        results = [
-            {"question": {"questionIndex": 1}, "mark": "A", "data": {}},
-            {"question": {"questionIndex": 2}, "mark": "B", "data": {}},
-        ]
-        summary = answer_summary_text(results)
-        assert "成功 2" in summary
-        assert "失败 0" in summary
-        assert "正确答案: A" in summary
+class TestFormatTime:
+    def test_normal(self):
+        s = format_time("2026-06-18T12:51:40.000Z")
+        assert "06-18" in s
+        assert ":" in s
 
-    def test_partial(self):
-        results = [
-            {"question": {"questionIndex": 1}, "mark": "A", "data": {}},
-            {"question": {"questionIndex": 2}, "mark": None, "data": {}},
-        ]
-        summary = answer_summary_text(results)
-        assert "成功 1" in summary
-        assert "失败 1" in summary
-        assert "未找到正确答案" in summary
+    def test_none(self):
+        assert format_time(None) == "?"
 
-    def test_uses_fallback_index(self):
-        results = [{"question": {}, "mark": "A", "data": {}}]
-        summary = answer_summary_text(results)
-        assert "第?题" in summary
+    def test_invalid(self):
+        assert format_time("bad") == "?"
+
+
+class TestDeadlineCell:
+    def test_no_deadline(self):
+        cell = deadline_cell({})
+        assert isinstance(cell, Text)
+        assert "无截止" in cell.plain
+
+    def test_already_past(self):
+        past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        cell = deadline_cell({"deadline": past})
+        assert "已截止" in cell.plain
+        assert "red" in str(cell.style)
+
+    def test_within_one_hour(self):
+        soon = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+        cell = deadline_cell({"deadline": soon})
+        assert "即将截止" in cell.plain
+        assert "red" in str(cell.style)
+
+    def test_within_one_day(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+        cell = deadline_cell({"deadline": future})
+        assert "h后" in cell.plain
+        assert "yellow" in str(cell.style)
+
+    def test_far_future(self):
+        future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        cell = deadline_cell({"deadline": future})
+        assert cell.plain.strip() != ""
+        assert "green" in str(cell.style)
 
 
 class TestEnsureLoggedIn:
