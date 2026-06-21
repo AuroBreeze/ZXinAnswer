@@ -1,0 +1,18 @@
+[project]
+name = "zxin"
+version = "0.1.0"
+description = "z-xin.net 作业自动答题脚本"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.34.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+addopts = "-ra"
