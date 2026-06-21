@@ -157,7 +157,10 @@ def get_all_homeworks(session: requests.Session, classroom_id: str) -> list[dict
     page_num = 1
     while True:
         data = fetch_homework_page(session, classroom_id, page_num, HOMEWORK_PAGE_SIZE)
-        page_records = extract_homework_records(data)
+        try:
+            page_records = extract_homework_records(data)
+        except RuntimeError:
+            break
         records.extend(page_records)
         total = data.get("data", {}).get("total")
         if total is not None and len(records) >= int(total):
@@ -291,7 +294,9 @@ def select_item(
     items: list[dict],
     columns: list[tuple[str, Callable[[dict], object]]],
     prompt: str,
-) -> dict:
+    allow_back: bool = False,
+) -> dict | None:
+    back_hint = "  [dim](b 返回)[/dim]" if allow_back else ""
     table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=False)
     table.add_column("#", style="cyan", justify="right", width=3)
     for header, _ in columns:
@@ -301,7 +306,9 @@ def select_item(
         table.add_row(*row)
     console.print(table)
     while True:
-        value = console.input(prompt).strip()
+        value = console.input(prompt + back_hint + " ").strip()
+        if allow_back and value.lower() in ("b", "0"):
+            return None
         if value.isdigit():
             index = int(value)
             if 1 <= index <= len(items):
@@ -392,8 +399,11 @@ def print_summary(results: list[dict]) -> None:
 
 # ---------- modes ----------
 
-def run_select_question_mode(session: requests.Session, classroom_id: str) -> None:
+def run_select_question_mode(session: requests.Session, classroom_id: str) -> dict | None:
     homeworks = get_all_homeworks(session, classroom_id)
+    if not homeworks:
+        console.print("[yellow]⚠ 当前课程没有作业[/yellow]")
+        return None
     console.print("\n[bold]作业列表[/bold]")
     homework = select_item(
         homeworks,
@@ -405,11 +415,15 @@ def run_select_question_mode(session: requests.Session, classroom_id: str) -> No
             ("截止时间", deadline_cell),
         ],
         "[bold cyan]请选择作业序号: [/bold cyan]",
+        allow_back=True,
     )
+    if homework is None:
+        return None
     detail_data = get_homework_detail(session, homework["id"])
     questions = extract_questions(detail_data)
     results = answer_all_questions(session, homework["id"], questions)
     print_summary(results)
+    return homework
 
 
 def run_wait_latest_mode(
@@ -445,11 +459,12 @@ def run_wait_latest_mode(
         time.sleep(poll_seconds)
 
 
-def select_mode() -> dict:
+def select_mode() -> dict | None:
     return select_item(
         [{"id": "1", "name": "选择作业自动答完"}, {"id": "2", "name": "等待最新题目"}],
         [("模式", lambda item: item["name"])],
         "[bold cyan]请选择模式序号: [/bold cyan]",
+        allow_back=True,
     )
 
 
@@ -468,24 +483,48 @@ def main() -> int:
         session = make_session()
         ensure_logged_in(session, username, password)
 
-        courses = get_classroom_data(session)
-        if not courses:
-            raise RuntimeError("没有可选择的课程")
-        console.print("\n[bold]课程列表[/bold]")
-        course = select_item(
-            courses,
-            [
-                ("课程", lambda c: c.get("courseName", "")),
-                ("教师", lambda c: c.get("teacherName", "")),
-                ("未完成", lambda c: str(c.get("unfinishedCount", 0))),
-            ],
-            "[bold cyan]请选择课程序号: [/bold cyan]",
-        )
-        mode = select_mode()
-        if mode["id"] == "1":
-            run_select_question_mode(session, course["id"])
-        else:
-            run_wait_latest_mode(session, course["id"])
+        while True:
+            courses = get_classroom_data(session)
+            if not courses:
+                raise RuntimeError("没有可选择的课程")
+            console.print("\n[bold]课程列表[/bold]")
+            course = select_item(
+                courses,
+                [
+                    ("课程", lambda c: c.get("courseName", "")),
+                    ("教师", lambda c: c.get("teacherName", "")),
+                    ("未完成", lambda c: str(c.get("unfinishedCount", 0))),
+                ],
+                "[bold cyan]请选择课程序号: [/bold cyan]",
+            )
+
+            while True:
+                mode = select_mode()
+                if mode is None:
+                    break
+                if mode["id"] == "1":
+                    result = run_select_question_mode(session, course["id"])
+                    if result is None:
+                        continue
+                    while True:
+                        again = console.input(
+                            "[bold cyan]再答一份? (Enter 继续, b 返回模式选择, q 退出): [/bold cyan]"
+                        ).strip().lower()
+                        if again == "q":
+                            return 0
+                        if again == "b":
+                            break
+                        result = run_select_question_mode(session, course["id"])
+                        if result is None:
+                            break
+                    if again == "q":
+                        return 0
+                    continue
+                else:
+                    run_wait_latest_mode(session, course["id"])
+                    return 0
+    except KeyboardInterrupt:
+        console.print("\n[dim]已退出[/dim]")
         return 0
     except requests.RequestException as exc:
         console.print(f"[red]✗ 请求失败: {exc}[/red]")

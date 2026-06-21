@@ -267,6 +267,44 @@ class TestDeadlineCell:
         assert "green" in str(cell.style)
 
 
+class TestSelectItemBack:
+    def test_returns_none_on_b(self, monkeypatch):
+        items = [{"id": "1"}, {"id": "2"}]
+        monkeypatch.setattr("main.console.input", lambda *a: "b")
+        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result is None
+
+    def test_returns_none_on_zero(self, monkeypatch):
+        items = [{"id": "1"}]
+        monkeypatch.setattr("main.console.input", lambda *a: "0")
+        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result is None
+
+    def test_no_back_returns_item_on_b(self, monkeypatch):
+        items = [{"id": "1"}, {"id": "2"}]
+        inputs = iter(["b", "1"])
+        monkeypatch.setattr("main.console.input", lambda *a: next(inputs))
+        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=False)
+        assert result == {"id": "1"}
+
+    def test_back_preserves_select(self, monkeypatch):
+        items = [{"id": "x"}, {"id": "y"}]
+        monkeypatch.setattr("main.console.input", lambda *a: "2")
+        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result == {"id": "y"}
+
+
+class TestSelectModeBack:
+    def test_returns_none_on_b(self, monkeypatch):
+        monkeypatch.setattr("main.console.input", lambda *a: "b")
+        assert main.select_mode() is None
+
+    def test_returns_mode_on_valid(self, monkeypatch):
+        monkeypatch.setattr("main.console.input", lambda *a: "2")
+        result = main.select_mode()
+        assert result["id"] == "2"
+
+
 class TestEnsureLoggedIn:
     def test_skips_login_when_alive(self, monkeypatch):
         called = {"login": False, "alive": False}
