@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
@@ -6,6 +7,7 @@ import pytest
 import requests
 from rich.text import Text
 
+import config
 from adapters.auth_api import assert_api_ok
 from adapters.homework_api import HomeworkApiAdapter
 from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _strip_html
@@ -373,3 +375,58 @@ class TestSelectItemExit:
         items = [{"id": "1"}]
         result = presenter.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
         assert result is None
+
+
+# ===== LoginUseCase.logout =====
+
+class TestLoginUseCaseLogout:
+    def test_logout_clears_and_relogs_in(self, monkeypatch):
+        api = MagicMock()
+        cookies = MagicMock()
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "2", "name": "账号密码"}
+        api.is_session_alive.return_value = False
+        monkeypatch.setenv("ZXIN_USERNAME", "test_user")
+        monkeypatch.setenv("ZXIN_PASSWORD", "test_pass")
+        uc = LoginUseCase(api, cookies, presenter)
+        uc.logout(MagicMock())
+        cookies.clear.assert_called_once()
+        api.login_password.assert_called_once()
+
+    def test_logout_reuses_session_if_alive(self, monkeypatch):
+        api = MagicMock()
+        cookies = MagicMock()
+        presenter = MagicMock()
+        api.is_session_alive.return_value = True  # 清除后 session 还有缓存
+        uc = LoginUseCase(api, cookies, presenter)
+        uc.logout(MagicMock())
+        cookies.clear.assert_called_once()
+        api.login_password.assert_not_called()
+        api.login_wechat.assert_not_called()
+
+
+# ===== CookieStoreAdapter.clear =====
+
+class TestCookieStoreClear:
+    def test_clear_empty_session(self, monkeypatch, tmp_path):
+        from adapters.cookie_store import CookieStoreAdapter
+        cookie_file = str(tmp_path / "cookies.txt")
+        adapter = CookieStoreAdapter()
+        session = MagicMock()
+        cookies_mock = MagicMock()
+        session.cookies = cookies_mock
+        monkeypatch.setattr(config, "COOKIE_FILE", cookie_file)
+        adapter.clear(session, cookie_file)
+        cookies_mock.clear.assert_called_once()
+
+    def test_clear_removes_existing_file(self, monkeypatch, tmp_path):
+        from adapters.cookie_store import CookieStoreAdapter
+        cookie_file = str(tmp_path / "cookies.txt")
+        with open(cookie_file, "w") as f:
+            f.write("# test cookie")
+        assert os.path.exists(cookie_file)
+        adapter = CookieStoreAdapter()
+        session = MagicMock()
+        session.cookies = MagicMock()
+        adapter.clear(session, cookie_file)
+        assert not os.path.exists(cookie_file)

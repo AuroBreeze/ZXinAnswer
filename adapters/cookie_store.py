@@ -1,5 +1,7 @@
 """Cookie 存储适配器 — 实现 CookiePort，使用 MozillaCookieJar。"""
 
+import os
+
 import requests
 from http.cookiejar import MozillaCookieJar
 
@@ -25,3 +27,13 @@ class CookieStoreAdapter:
     def save(self, session: requests.Session, filepath: str = config.COOKIE_FILE) -> None:
         session.cookies.save(ignore_discard=True, ignore_expires=True)
         console.print(f"[green]✓[/green] cookie 已保存到 {filepath}")
+
+    def clear(self, session: requests.Session, filepath: str = config.COOKIE_FILE) -> None:
+        session.cookies.clear()
+        session.cookies = MozillaCookieJar(filepath)
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except OSError:
+                pass
+        console.print(f"[yellow]→[/yellow] 已退出账号，cookie 已清除: {filepath}")

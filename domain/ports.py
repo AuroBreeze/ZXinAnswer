@@ -93,3 +93,6 @@ class CookiePort(ABC):
 
     @abstractmethod
     def save(self, session: requests.Session, filepath: str) -> None: ...
+
+    @abstractmethod
+    def clear(self, session: requests.Session, filepath: str) -> None: ...

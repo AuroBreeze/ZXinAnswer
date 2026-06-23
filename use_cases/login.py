@@ -42,3 +42,8 @@ class LoginUseCase:
                     raise AuthenticationError("请先设置环境变量 ZXIN_USERNAME 和 ZXIN_PASSWORD")
             self.auth.login_password(session, username, password)
             self.presenter.success(f"登录成功，cookie 已保存到 {config.COOKIE_FILE}")
+
+    def logout(self, session) -> None:
+        """清除当前 session 的 cookie 并删除本地 cookie 文件，重新走登录流程。"""
+        self.cookies.clear(session)
+        self.ensure_logged_in(session)

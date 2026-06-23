@@ -27,7 +27,11 @@ from use_cases.wait import WaitLatestUseCase
 
 def select_mode(presenter: ConsolePresenter) -> dict | None:
     return presenter.select_item(
-        [{"id": "1", "name": "选择作业自动答完"}, {"id": "2", "name": "等待最新题目"}],
+        [
+            {"id": "1", "name": "选择作业自动答完"},
+            {"id": "2", "name": "等待最新题目"},
+            {"id": "3", "name": "退出账号（重新登录）"},
+        ],
         [("模式", lambda item: item["name"])],
         "[bold cyan]请选择模式序号: [/bold cyan]",
         allow_back=True,
@@ -80,9 +84,12 @@ def main() -> int:
                     if again == "q":
                         return 0
                     continue
-                else:
+                elif mode["id"] == "2":
                     wait_uc.execute(session, course.id)
                     return 0
+                elif mode["id"] == "3":
+                    login_uc.logout(session)
+                    break
     except (KeyboardInterrupt, ExitRequested):
         presenter.info("已退出")
         return 0
