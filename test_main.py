@@ -7,19 +7,24 @@ import requests
 from rich.text import Text
 
 import main
-from main import (
+import homework
+from auth import (
     ApiError,
     assert_api_ok,
-    deadline_cell,
+)
+from homework import (
     extract_homework_records,
     extract_questions,
     find_latest_unprocessed_question,
-    format_time,
     is_correct_answer,
+    strip_html,
+)
+from main import (
+    deadline_cell,
+    format_time,
     parse_iso,
     progress_text,
     question_label,
-    strip_html,
 )
 
 
@@ -338,8 +343,8 @@ class TestEnsureLoggedIn:
 class TestGetAllHomeworks:
     def test_single_page_when_under_page_size(self, monkeypatch):
         page_data = {"data": {"records": [{"id": "1"}, {"id": "2"}], "total": 2}}
-        monkeypatch.setattr(main, "fetch_homework_page", lambda *a: page_data)
-        result = main.get_all_homeworks(MagicMock(), "cid")
+        monkeypatch.setattr(homework, "fetch_homework_page", lambda *a: page_data)
+        result = homework.get_all_homeworks(MagicMock(), "cid")
         assert [r["id"] for r in result] == ["1", "2"]
 
     def test_paginates_until_total_reached(self, monkeypatch):
@@ -353,13 +358,13 @@ class TestGetAllHomeworks:
             calls["n"] += 1
             return pages[page_num - 1]
 
-        monkeypatch.setattr(main, "fetch_homework_page", fake_fetch)
-        result = main.get_all_homeworks(MagicMock(), "cid")
+        monkeypatch.setattr(homework, "fetch_homework_page", fake_fetch)
+        result = homework.get_all_homeworks(MagicMock(), "cid")
         assert len(result) == 25
         assert calls["n"] == 2
 
     def test_stops_when_page_under_size_without_total(self, monkeypatch):
         page_data = {"data": {"records": [{"id": "1"}, {"id": "2"}]}}
-        monkeypatch.setattr(main, "fetch_homework_page", lambda *a: page_data)
-        result = main.get_all_homeworks(MagicMock(), "cid")
+        monkeypatch.setattr(homework, "fetch_homework_page", lambda *a: page_data)
+        result = homework.get_all_homeworks(MagicMock(), "cid")
         assert len(result) == 2
