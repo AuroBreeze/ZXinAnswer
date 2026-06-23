@@ -296,28 +296,50 @@ class TestLoginUseCase:
         api.login_password.assert_not_called()
         api.login_wechat.assert_not_called()
 
-    def test_password_login(self, monkeypatch):
+    def test_env_login_success(self, monkeypatch):
         api = MagicMock()
         api.is_session_alive.return_value = False
+        monkeypatch.setenv("ZXIN_USERNAME", "env_user")
+        monkeypatch.setenv("ZXIN_PASSWORD", "env_pass")
         presenter = MagicMock()
-        presenter.select_item.return_value = {"id": "2", "name": "账号密码"}
         uc = LoginUseCase(api, MagicMock(), presenter)
-        uc.ensure_logged_in(MagicMock(), "u", "p")
+        uc.ensure_logged_in(MagicMock())
         api.login_password.assert_called_once()
+        presenter.select_item.assert_not_called()
 
-    def test_password_no_credentials(self, monkeypatch):
+    def test_env_login_fails_falls_to_menu(self, monkeypatch):
         api = MagicMock()
         api.is_session_alive.return_value = False
+        api.login_password.side_effect = [Exception("401"), None]
+        monkeypatch.setenv("ZXIN_USERNAME", "env_user")
+        monkeypatch.setenv("ZXIN_PASSWORD", "env_pass")
         presenter = MagicMock()
-        presenter.select_item.return_value = {"id": "2", "name": "账号密码"}
+        presenter.select_item.return_value = {"id": "2", "name": "手动输入账号密码"}
+        presenter.prompt.side_effect = ["manual_user", "manual_pass"]
         uc = LoginUseCase(api, MagicMock(), presenter)
-        with pytest.raises(AuthenticationError, match="环境变量"):
-            uc.ensure_logged_in(MagicMock(), None, None)
+        uc.ensure_logged_in(MagicMock())
+        assert api.login_password.call_count == 2
+
+    def test_manual_password_login(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = False
+        monkeypatch.delenv("ZXIN_USERNAME", raising=False)
+        monkeypatch.delenv("ZXIN_PASSWORD", raising=False)
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "2", "name": "手动输入账号密码"}
+        presenter.prompt.side_effect = ["manual_user", "manual_pass"]
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        uc.ensure_logged_in(MagicMock())
+        args = api.login_password.call_args
+        assert args.args[1] == "manual_user"
+        assert args.args[2] == "manual_pass"
 
     def test_wechat_login(self, monkeypatch):
         api = MagicMock()
         api.is_session_alive.return_value = False
         api.login_wechat.return_value = True
+        monkeypatch.delenv("ZXIN_USERNAME", raising=False)
+        monkeypatch.delenv("ZXIN_PASSWORD", raising=False)
         presenter = MagicMock()
         presenter.select_item.return_value = {"id": "1", "name": "微信扫码"}
         uc = LoginUseCase(api, MagicMock(), presenter)
@@ -328,6 +350,8 @@ class TestLoginUseCase:
         api = MagicMock()
         api.is_session_alive.return_value = False
         api.login_wechat.return_value = False
+        monkeypatch.delenv("ZXIN_USERNAME", raising=False)
+        monkeypatch.delenv("ZXIN_PASSWORD", raising=False)
         presenter = MagicMock()
         presenter.select_item.return_value = {"id": "1", "name": "微信扫码"}
         uc = LoginUseCase(api, MagicMock(), presenter)
