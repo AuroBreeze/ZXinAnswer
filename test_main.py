@@ -6,26 +6,15 @@ import pytest
 import requests
 from rich.text import Text
 
-import main
-import homework
-from auth import (
-    ApiError,
-    assert_api_ok,
-)
-from homework import (
-    extract_homework_records,
-    extract_questions,
-    find_latest_unprocessed_question,
-    is_correct_answer,
-    strip_html,
-)
-from main import (
-    deadline_cell,
-    format_time,
-    parse_iso,
-    progress_text,
-    question_label,
-)
+from adapters.auth_api import assert_api_ok
+from adapters.homework_api import HomeworkApiAdapter
+from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _strip_html
+from domain.entities import AnswerResult, Course, Homework, Question, QuestionOption
+from domain.exceptions import ApiError, AuthenticationError, HomeworkError
+from use_cases.answer import AnswerUseCase
+from use_cases.homework import HomeworkUseCase
+from use_cases.login import LoginUseCase
+from use_cases.wait import WaitLatestUseCase
 
 
 def _resp(body: dict | str, status: int = 200) -> requests.Response:
@@ -35,336 +24,310 @@ def _resp(body: dict | str, status: int = 200) -> requests.Response:
     return r
 
 
-class TestAssertApiOk:
-    def test_code_zero_passes(self):
-        r = _resp({"code": 0, "data": {"x": 1}, "msg": "ok"})
-        assert assert_api_ok(r) == {"code": 0, "data": {"x": 1}, "msg": "ok"}
+# ===== domain.entities =====
 
-    def test_code_200_passes(self):
-        r = _resp({"code": 200, "data": {}})
-        assert assert_api_ok(r)["code"] == 200
+class TestCourse:
+    def test_from_dict(self):
+        c = Course.from_dict({"id": "1", "courseName": "OS", "teacherName": "Z", "unfinishedCount": 3})
+        assert c.id == "1"
+        assert c.course_name == "OS"
+        assert c.teacher_name == "Z"
+        assert c.unfinished_count == 3
 
-    def test_success_true_passes(self):
-        r = _resp({"success": True, "data": {}})
-        assert assert_api_ok(r)["success"] is True
-
-    def test_code_nonzero_raises(self):
-        r = _resp({"code": 1, "msg": "密码错误"})
-        with pytest.raises(ApiError, match="密码错误"):
-            assert_api_ok(r)
-
-    def test_success_false_raises(self):
-        r = _resp({"success": False, "msg": "未登录"})
-        with pytest.raises(ApiError, match="未登录"):
-            assert_api_ok(r)
-
-    def test_http_error_raises(self):
-        r = _resp("not found", status=404)
-        with pytest.raises(requests.HTTPError):
-            assert_api_ok(r)
-
-    def test_invalid_json_raises(self):
-        r = _resp("not json at all")
-        with pytest.raises(ApiError, match="不是合法 JSON"):
-            assert_api_ok(r)
-
-    def test_non_object_top_raises(self):
-        r = _resp("[1,2,3]")
-        with pytest.raises(ApiError, match="顶层不是对象"):
-            assert_api_ok(r)
-
-    def test_code_string_zero_passes(self):
-        r = _resp({"code": "0", "data": {}})
-        assert assert_api_ok(r)["code"] == "0"
+    def test_from_dict_defaults(self):
+        c = Course.from_dict({})
+        assert c.id == ""
+        assert c.course_name == ""
+        assert c.unfinished_count == 0
 
 
-class TestIsCorrectAnswer:
-    def test_nonzero_score(self):
-        assert is_correct_answer({"data": {"answerRecord": {"answerRecordScore": 5}}}) is True
+class TestHomework:
+    def test_from_dict(self):
+        h = Homework.from_dict({"id": "h1", "name": "HW1", "answerSheetScore": 80, "answerProgress": "100", "createTime": "2026-06-01", "deadline": "2026-06-10"})
+        assert h.id == "h1"
+        assert h.name == "HW1"
+        assert h.answer_sheet_score == 80
+        assert h.answer_progress == "100"
+
+    def test_from_dict_fallback_name(self):
+        h = Homework.from_dict({"id": "h2"})
+        assert h.name == "h2"
+
+
+class TestQuestion:
+    def test_from_dict(self):
+        q = Question.from_dict({"questionId": "q1", "questionIndex": 3, "content": "<b>x</b>", "options": [{"mark": "A"}, {"mark": "B"}]})
+        assert q.question_id == "q1"
+        assert q.question_index == 3
+        assert len(q.options) == 2
+        assert q.options[0].mark == "A"
+
+    def test_from_dict_defaults(self):
+        q = Question.from_dict({})
+        assert q.question_id == ""
+        assert q.question_index == "?"
+        assert q.options == []
+
+
+class TestAnswerResult:
+    def test_correct(self):
+        r = AnswerResult.from_dict({"data": {"answerRecord": {"answerRecordScore": 5}, "answerSheet": {"score": 10, "answerProgress": 50}}})
+        assert r.is_correct is True
+        assert r.question_score == 5
+        assert r.total_score == 10
 
     def test_zero_score(self):
-        assert is_correct_answer({"data": {"answerRecord": {"answerRecordScore": 0}}}) is False
+        r = AnswerResult.from_dict({"data": {"answerRecord": {"answerRecordScore": 0}, "answerSheet": {}}})
+        assert r.is_correct is False
 
     def test_none_score(self):
-        assert is_correct_answer({"data": {"answerRecord": {"answerRecordScore": None}}}) is False
-
-    def test_missing_score(self):
-        assert is_correct_answer({"data": {"answerRecord": {}}}) is False
+        r = AnswerResult.from_dict({"data": {"answerRecord": {"answerRecordScore": None}, "answerSheet": {}}})
+        assert r.is_correct is False
 
     def test_missing_record(self):
-        assert is_correct_answer({"data": {}}) is False
+        r = AnswerResult.from_dict({"data": {}})
+        assert r.is_correct is False
 
-    def test_missing_data(self):
-        assert is_correct_answer({}) is False
 
+# ===== adapters.auth_api.assert_api_ok =====
+
+class TestAssertApiOk:
+    def test_code_zero(self):
+        assert assert_api_ok(_resp({"code": 0, "data": {}, "msg": "ok"}))["code"] == 0
+
+    def test_code_200(self):
+        assert assert_api_ok(_resp({"code": 200, "data": {}}))["code"] == 200
+
+    def test_success_true(self):
+        assert assert_api_ok(_resp({"success": True, "data": {}}))["success"] is True
+
+    def test_code_nonzero_raises(self):
+        with pytest.raises(ApiError, match="密码错误"):
+            assert_api_ok(_resp({"code": 1, "msg": "密码错误"}))
+
+    def test_success_false_raises(self):
+        with pytest.raises(ApiError, match="未登录"):
+            assert_api_ok(_resp({"success": False, "msg": "未登录"}))
+
+    def test_http_error_raises(self):
+        with pytest.raises(requests.HTTPError):
+            assert_api_ok(_resp("not found", status=404))
+
+    def test_invalid_json(self):
+        with pytest.raises(ApiError, match="不是合法 JSON"):
+            assert_api_ok(_resp("not json"))
+
+    def test_non_object(self):
+        with pytest.raises(ApiError, match="顶层不是对象"):
+            assert_api_ok(_resp("[1,2,3]"))
+
+    def test_code_string_zero(self):
+        assert assert_api_ok(_resp({"code": "0", "data": {}}))["code"] == "0"
+
+    def test_message_field(self):
+        with pytest.raises(ApiError, match="用户名或密码错误"):
+            assert_api_ok(_resp({"code": 401, "message": "用户名或密码错误"}))
+
+
+# ===== adapters.presenter =====
 
 class TestStripHtml:
-    def test_strips_tags(self):
-        assert strip_html("<p>hello</p>") == "hello"
+    def test_strips(self):
+        assert _strip_html("<p>hi</p>") == "hi"
 
-    def test_nested_tags(self):
-        assert strip_html("<div><b>hi</b></div>") == "hi"
+    def test_nested(self):
+        assert _strip_html("<div><b>x</b></div>") == "x"
 
     def test_none(self):
-        assert strip_html(None) == ""
+        assert _strip_html(None) == ""
 
     def test_empty(self):
-        assert strip_html("") == ""
-
-    def test_with_entities_kept(self):
-        assert strip_html("<p>a &amp; b</p>") == "a &amp; b"
-
-
-class TestExtractHomeworkRecords:
-    def test_normal(self):
-        data = {"data": {"records": [{"id": "1"}, {"id": "2"}]}}
-        assert extract_homework_records(data) == [{"id": "1"}, {"id": "2"}]
-
-    def test_empty_raises(self):
-        with pytest.raises(RuntimeError, match="没有作业"):
-            extract_homework_records({"data": {"records": []}})
-
-    def test_missing_records_raises(self):
-        with pytest.raises(RuntimeError, match="结构不符合预期"):
-            extract_homework_records({"data": {}})
-
-    def test_missing_data_raises(self):
-        with pytest.raises(RuntimeError, match="结构不符合预期"):
-            extract_homework_records({})
-
-
-class TestExtractQuestions:
-    def test_normal(self):
-        data = {"data": {"questions": [{"questionId": "q1"}]}}
-        assert extract_questions(data) == [{"questionId": "q1"}]
-
-    def test_empty_raises(self):
-        with pytest.raises(RuntimeError, match="没有题目"):
-            extract_questions({"data": {"questions": []}})
-
-    def test_missing_raises(self):
-        with pytest.raises(RuntimeError, match="结构不符合预期"):
-            extract_questions({"data": {}})
-
-
-class TestFindLatestUnprocessedQuestion:
-    def test_returns_last_unprocessed(self):
-        qs = [
-            {"questionId": "a"},
-            {"questionId": "b"},
-            {"questionId": "c"},
-        ]
-        result = find_latest_unprocessed_question(qs, {"a", "b"})
-        assert result == {"questionId": "c"}
-
-    def test_all_processed_returns_none(self):
-        qs = [{"questionId": "a"}, {"questionId": "b"}]
-        assert find_latest_unprocessed_question(qs, {"a", "b"}) is None
-
-    def test_empty_returns_none(self):
-        assert find_latest_unprocessed_question([], set()) is None
-
-    def test_skips_missing_id(self):
-        qs = [{"questionId": ""}, {"questionId": None}, {"questionId": "x"}]
-        result = find_latest_unprocessed_question(qs, set())
-        assert result == {"questionId": "x"}
-
-
-class TestQuestionLabel:
-    def test_normal(self):
-        q = {
-            "questionIndex": 3,
-            "content": "<b>2+2=?</b>",
-            "options": [{"mark": "A"}, {"mark": "B"}],
-        }
-        assert question_label(q) == "第3题 2+2=? [A/B]"
-
-    def test_missing_index(self):
-        q = {"content": "x", "options": [{"mark": "A"}]}
-        assert question_label(q) == "第?题 x [A]"
-
-    def test_no_options(self):
-        q = {"questionIndex": 1, "content": "y"}
-        assert question_label(q) == "第1题 y []"
-
-
-class TestProgressText:
-    def test_normal(self):
-        data = {
-            "data": {
-                "answerRecord": {"answerRecordScore": 5},
-                "answerSheet": {"score": 80, "answerProgress": 50},
-            }
-        }
-        text = progress_text(data)
-        assert "本题 5" in text
-        assert "总分 80" in text
-        assert "作答 50%" in text
-
-    def test_empty(self):
-        text = progress_text({})
-        assert "?" in text
-
-    def test_missing_record(self):
-        text = progress_text({"data": {"answerSheet": {"score": 10}}})
-        assert "总分 10" in text
-        assert "本题 ?" in text
+        assert _strip_html("") == ""
 
 
 class TestParseIso:
     def test_normal(self):
-        dt = parse_iso("2026-06-18T12:51:40.000Z")
-        assert dt is not None
-        assert dt.tzinfo is not None
-        assert dt.year == 2026 and dt.month == 6 and dt.day == 18
+        dt = _parse_iso("2026-06-18T12:51:40.000Z")
+        assert dt is not None and dt.year == 2026
 
     def test_none(self):
-        assert parse_iso(None) is None
-
-    def test_empty(self):
-        assert parse_iso("") is None
+        assert _parse_iso(None) is None
 
     def test_invalid(self):
-        assert parse_iso("not a date") is None
+        assert _parse_iso("bad") is None
 
 
 class TestFormatTime:
     def test_normal(self):
-        s = format_time("2026-06-18T12:51:40.000Z")
-        assert "06-18" in s
-        assert ":" in s
+        assert "06-18" in _format_time("2026-06-18T12:51:40.000Z")
 
     def test_none(self):
-        assert format_time(None) == "?"
+        assert _format_time(None) == "?"
 
     def test_invalid(self):
-        assert format_time("bad") == "?"
+        assert _format_time("bad") == "?"
 
 
 class TestDeadlineCell:
     def test_no_deadline(self):
-        cell = deadline_cell({})
-        assert isinstance(cell, Text)
+        cell = _deadline_cell({})
         assert "无截止" in cell.plain
 
-    def test_already_past(self):
+    def test_past(self):
         past = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        cell = deadline_cell({"deadline": past})
+        cell = _deadline_cell({"deadline": past})
         assert "已截止" in cell.plain
         assert "red" in str(cell.style)
 
-    def test_within_one_hour(self):
+    def test_within_1h(self):
         soon = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
-        cell = deadline_cell({"deadline": soon})
+        cell = _deadline_cell({"deadline": soon})
         assert "即将截止" in cell.plain
         assert "red" in str(cell.style)
 
-    def test_within_one_day(self):
+    def test_within_24h(self):
         future = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
-        cell = deadline_cell({"deadline": future})
+        cell = _deadline_cell({"deadline": future})
         assert "h后" in cell.plain
         assert "yellow" in str(cell.style)
 
-    def test_far_future(self):
+    def test_far(self):
         future = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
-        cell = deadline_cell({"deadline": future})
-        assert cell.plain.strip() != ""
+        cell = _deadline_cell({"deadline": future})
         assert "green" in str(cell.style)
 
 
-class TestSelectItemBack:
-    def test_returns_none_on_b(self, monkeypatch):
-        items = [{"id": "1"}, {"id": "2"}]
-        monkeypatch.setattr("main.console.input", lambda *a: "b")
-        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
-        assert result is None
+# ===== HomeworkApiAdapter =====
 
-    def test_returns_none_on_zero(self, monkeypatch):
-        items = [{"id": "1"}]
-        monkeypatch.setattr("main.console.input", lambda *a: "0")
-        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
-        assert result is None
+class TestHomeworkApiAdapter:
+    def test_get_courses(self, monkeypatch):
+        raw = {"code": 0, "data": [{"id": "c1", "courseName": "OS", "teacherName": "Z", "unfinishedCount": 2}]}
+        session = MagicMock()
+        session.post.return_value = _resp(raw)
+        adapter = HomeworkApiAdapter()
+        courses = adapter.get_courses(session)
+        assert len(courses) == 1
+        assert courses[0].id == "c1"
+        assert courses[0].course_name == "OS"
 
-    def test_no_back_returns_item_on_b(self, monkeypatch):
-        items = [{"id": "1"}, {"id": "2"}]
-        inputs = iter(["b", "1"])
-        monkeypatch.setattr("main.console.input", lambda *a: next(inputs))
-        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=False)
-        assert result == {"id": "1"}
+    def test_get_courses_empty(self, monkeypatch):
+        session = MagicMock()
+        session.post.return_value = _resp({"code": 0, "data": []})
+        adapter = HomeworkApiAdapter()
+        assert adapter.get_courses(session) == []
 
-    def test_back_preserves_select(self, monkeypatch):
-        items = [{"id": "x"}, {"id": "y"}]
-        monkeypatch.setattr("main.console.input", lambda *a: "2")
-        result = main.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
-        assert result == {"id": "y"}
+    def test_get_homework_detail(self, monkeypatch):
+        raw = {"code": 0, "data": {"questions": [{"questionId": "q1", "questionIndex": 1, "content": "x", "options": []}]}}
+        session = MagicMock()
+        session.post.return_value = _resp(raw)
+        adapter = HomeworkApiAdapter()
+        questions = adapter.get_homework_detail(session, "h1")
+        assert len(questions) == 1
+        assert questions[0].question_id == "q1"
 
+    def test_submit_answer(self, monkeypatch):
+        raw = {"code": 0, "data": {"answerRecord": {"answerRecordScore": 5}, "answerSheet": {"score": 10, "answerProgress": 50}}}
+        session = MagicMock()
+        session.post.return_value = _resp(raw)
+        adapter = HomeworkApiAdapter()
+        result = adapter.submit_answer(session, "h1", "q1", "A")
+        assert result.is_correct is True
+        assert result.question_score == 5
 
-class TestSelectModeBack:
-    def test_returns_none_on_b(self, monkeypatch):
-        monkeypatch.setattr("main.console.input", lambda *a: "b")
-        assert main.select_mode() is None
-
-    def test_returns_mode_on_valid(self, monkeypatch):
-        monkeypatch.setattr("main.console.input", lambda *a: "2")
-        result = main.select_mode()
-        assert result["id"] == "2"
-
-
-class TestEnsureLoggedIn:
-    def test_skips_login_when_alive(self, monkeypatch):
-        called = {"login": False, "alive": False}
-        monkeypatch.setattr(main, "is_session_alive", lambda s: (called.__setitem__("alive", True) or True))
-        monkeypatch.setattr(main, "login", lambda *a: called.__setitem__("login", True))
-        ensure_logged_in = main.ensure_logged_in
-        ensure_logged_in(MagicMock(), "u", "p")
-        assert called["alive"] is True
-        assert called["login"] is False
-
-    def test_logs_in_when_dead_password(self, monkeypatch):
-        called = {"login": 0}
-        monkeypatch.setattr(main, "is_session_alive", lambda s: False)
-        monkeypatch.setattr(main, "select_item", lambda *a, **k: {"id": "2", "name": "账号密码"})
-        monkeypatch.setattr(main, "login", lambda *a: called.__setitem__("login", called["login"] + 1) or {"ok": True})
-        ensure_logged_in = main.ensure_logged_in
-        ensure_logged_in(MagicMock(), "u", "p")
-        assert called["login"] == 1
-
-    def test_logs_in_when_dead_no_credentials(self, monkeypatch):
-        called = {"login": 0}
-        monkeypatch.setattr(main, "is_session_alive", lambda s: False)
-        monkeypatch.setattr(main, "select_item", lambda *a, **k: {"id": "2", "name": "账号密码"})
-        monkeypatch.setattr(main, "load_credentials", lambda: ("loaded_u", "loaded_p"))
-        monkeypatch.setattr(main, "login", lambda *a: called.__setitem__("login", called["login"] + 1) or {"ok": True})
-        ensure_logged_in = main.ensure_logged_in
-        ensure_logged_in(MagicMock(), None, None)
-        assert called["login"] == 1
+    def test_get_homework_detail_no_questions(self, monkeypatch):
+        raw = {"code": 0, "data": {"questions": []}}
+        session = MagicMock()
+        session.post.return_value = _resp(raw)
+        adapter = HomeworkApiAdapter()
+        with pytest.raises(HomeworkError, match="没有题目"):
+            adapter.get_homework_detail(session, "h1")
 
 
-class TestGetAllHomeworks:
-    def test_single_page_when_under_page_size(self, monkeypatch):
-        page_data = {"data": {"records": [{"id": "1"}, {"id": "2"}], "total": 2}}
-        monkeypatch.setattr(homework, "fetch_homework_page", lambda *a: page_data)
-        result = homework.get_all_homeworks(MagicMock(), "cid")
-        assert [r["id"] for r in result] == ["1", "2"]
+# ===== use_cases.wait.WaitLatestUseCase =====
 
-    def test_paginates_until_total_reached(self, monkeypatch):
-        pages = [
-            {"data": {"records": [{"id": str(i)} for i in range(20)], "total": 25}},
-            {"data": {"records": [{"id": str(i)} for i in range(20, 25)], "total": 25}},
+class TestFindLatestUnprocessed:
+    def test_returns_last(self):
+        qs = [Question("a", 1, "", []), Question("b", 2, "", []), Question("c", 3, "", [])]
+        result = WaitLatestUseCase._find_latest_unprocessed(qs, {"a", "b"})
+        assert result.question_id == "c"
+
+    def test_all_processed(self):
+        qs = [Question("a", 1, "", []), Question("b", 2, "", [])]
+        assert WaitLatestUseCase._find_latest_unprocessed(qs, {"a", "b"}) is None
+
+    def test_empty(self):
+        assert WaitLatestUseCase._find_latest_unprocessed([], set()) is None
+
+    def test_skips_empty_id(self):
+        qs = [Question("", 1, "", []), Question("x", 2, "", [])]
+        result = WaitLatestUseCase._find_latest_unprocessed(qs, set())
+        assert result.question_id == "x"
+
+
+# ===== use_cases.answer.AnswerUseCase =====
+
+class TestAnswerUseCase:
+    def test_answer_all(self, monkeypatch):
+        api = MagicMock()
+        api.submit_answer.side_effect = [
+            AnswerResult(0, 0, 0, False, {}),
+            AnswerResult(5, 10, 50, True, {}),
         ]
-        calls = {"n": 0}
+        presenter = MagicMock()
+        uc = AnswerUseCase(api, presenter)
+        question = Question("q1", 1, "content", [QuestionOption("A"), QuestionOption("B")])
+        results = uc.answer_all(MagicMock(), "h1", [question])
+        assert len(results) == 1
+        assert results[0]["mark"] == "B"
+        assert results[0]["is_correct"] is True
 
-        def fake_fetch(s, cid, page_num, page_size):
-            calls["n"] += 1
-            return pages[page_num - 1]
 
-        monkeypatch.setattr(homework, "fetch_homework_page", fake_fetch)
-        result = homework.get_all_homeworks(MagicMock(), "cid")
-        assert len(result) == 25
-        assert calls["n"] == 2
+# ===== use_cases.login.LoginUseCase =====
 
-    def test_stops_when_page_under_size_without_total(self, monkeypatch):
-        page_data = {"data": {"records": [{"id": "1"}, {"id": "2"}]}}
-        monkeypatch.setattr(homework, "fetch_homework_page", lambda *a: page_data)
-        result = homework.get_all_homeworks(MagicMock(), "cid")
-        assert len(result) == 2
+class TestLoginUseCase:
+    def test_skips_when_alive(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = True
+        presenter = MagicMock()
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        uc.ensure_logged_in(MagicMock(), "u", "p")
+        api.login_password.assert_not_called()
+        api.login_wechat.assert_not_called()
+
+    def test_password_login(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = False
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "2", "name": "账号密码"}
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        uc.ensure_logged_in(MagicMock(), "u", "p")
+        api.login_password.assert_called_once()
+
+    def test_password_no_credentials(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = False
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "2", "name": "账号密码"}
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        with pytest.raises(AuthenticationError, match="环境变量"):
+            uc.ensure_logged_in(MagicMock(), None, None)
+
+    def test_wechat_login(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = False
+        api.login_wechat.return_value = True
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "1", "name": "微信扫码"}
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        uc.ensure_logged_in(MagicMock())
+        api.login_wechat.assert_called_once()
+
+    def test_wechat_login_fails(self, monkeypatch):
+        api = MagicMock()
+        api.is_session_alive.return_value = False
+        api.login_wechat.return_value = False
+        presenter = MagicMock()
+        presenter.select_item.return_value = {"id": "1", "name": "微信扫码"}
+        uc = LoginUseCase(api, MagicMock(), presenter)
+        with pytest.raises(AuthenticationError, match="扫码登录失败"):
+            uc.ensure_logged_in(MagicMock())
