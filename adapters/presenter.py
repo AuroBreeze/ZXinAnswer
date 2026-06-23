@@ -10,6 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from domain.entities import AnswerResult, Question
+from domain.exceptions import ExitRequested
 
 console = Console()
 
@@ -88,7 +89,11 @@ class ConsolePresenter:
         prompt: str,
         allow_back: bool = False,
     ) -> dict | None:
-        back_hint = "  [dim](b 返回)[/dim]" if allow_back else ""
+        hints = []
+        if allow_back:
+            hints.append("b 返回")
+        hints.append("q 退出")
+        hint_str = "  [dim](" + ", ".join(hints) + ")[/dim]"
         table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=False)
         table.add_column("#", style="cyan", justify="right", width=3)
         for header, _ in columns:
@@ -98,7 +103,9 @@ class ConsolePresenter:
             table.add_row(*row)
         console.print(table)
         while True:
-            value = console.input(prompt + back_hint + " ").strip()
+            value = console.input(prompt + hint_str + " ").strip()
+            if value.lower() == "q":
+                raise ExitRequested()
             if allow_back and value.lower() in ("b", "0"):
                 return None
             if value.isdigit():

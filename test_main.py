@@ -10,7 +10,7 @@ from adapters.auth_api import assert_api_ok
 from adapters.homework_api import HomeworkApiAdapter
 from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _strip_html
 from domain.entities import AnswerResult, Course, Homework, Question, QuestionOption
-from domain.exceptions import ApiError, AuthenticationError, HomeworkError
+from domain.exceptions import ApiError, AuthenticationError, ExitRequested, HomeworkError
 from use_cases.answer import AnswerUseCase
 from use_cases.homework import HomeworkUseCase
 from use_cases.login import LoginUseCase
@@ -331,3 +331,45 @@ class TestLoginUseCase:
         uc = LoginUseCase(api, MagicMock(), presenter)
         with pytest.raises(AuthenticationError, match="扫码登录失败"):
             uc.ensure_logged_in(MagicMock())
+
+
+# ===== ConsolePresenter.select_item: q 退出 =====
+
+class TestSelectItemExit:
+    def test_q_raises_exit_requested(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["q"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        items = [{"id": "1"}, {"id": "2"}]
+        with pytest.raises(ExitRequested):
+            presenter.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+
+    def test_q_raises_without_back(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["q"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        with pytest.raises(ExitRequested):
+            presenter.select_item([{"id": "1"}], [("id", lambda x: x["id"])], "prompt")
+
+    def test_q_uppercase_raises(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["Q"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        with pytest.raises(ExitRequested):
+            presenter.select_item([{"id": "1"}], [("id", lambda x: x["id"])], "prompt")
+
+    def test_q_then_valid_returns_item(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["x", "1"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        items = [{"id": "1"}, {"id": "2"}]
+        result = presenter.select_item(items, [("id", lambda x: x["id"])], "prompt")
+        assert result == {"id": "1"}
+
+    def test_back_returns_none_with_q_available(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["b"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        items = [{"id": "1"}]
+        result = presenter.select_item(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result is None

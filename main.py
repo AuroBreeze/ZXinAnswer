@@ -18,7 +18,7 @@ from adapters.cookie_store import CookieStoreAdapter
 from adapters.homework_api import HomeworkApiAdapter
 from adapters.presenter import ConsolePresenter
 from adapters.qr import QRGeneratorAdapter
-from domain.exceptions import ApiError, AuthenticationError
+from domain.exceptions import ApiError, AuthenticationError, ExitRequested
 from use_cases.answer import AnswerUseCase
 from use_cases.homework import HomeworkUseCase
 from use_cases.login import LoginUseCase
@@ -83,7 +83,7 @@ def main() -> int:
                 else:
                     wait_uc.execute(session, course.id)
                     return 0
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExitRequested):
         presenter.info("已退出")
         return 0
     except requests.RequestException as exc:

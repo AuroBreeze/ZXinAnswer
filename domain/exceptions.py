@@ -11,3 +11,7 @@ class AuthenticationError(RuntimeError):
 
 class HomeworkError(RuntimeError):
     """作业数据结构异常。"""
+
+
+class ExitRequested(Exception):
+    """用户请求退出（在菜单中输入 q）。"""
