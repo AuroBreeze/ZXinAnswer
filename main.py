@@ -2,10 +2,12 @@ import os
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar
 from typing import Any, Callable
 
+import qrcode
 import requests
 from rich.console import Console
 from rich.panel import Panel
@@ -15,7 +17,11 @@ from rich.text import Text
 console = Console()
 
 
-LOGIN_URL = "https://auth.z-xin.net/api/portal/auth/login"
+AUTH_HOST = "https://auth.z-xin.net"
+LOGIN_URL = f"{AUTH_HOST}/api/portal/auth/login"
+WECHAT_QRCODE_URL = f"{AUTH_HOST}/api/portal/wechat/qrcode"
+WECHAT_LOGIN_CHECK_URL = f"{AUTH_HOST}/api/portal/wechat/login-check"
+USER_SESSION_URL = "https://stu.z-xin.net/api/portal/user/session"
 CLASSROOM_API_URL = "https://stu.z-xin.net/api/classroom"
 HOMEWORK_API_URL = "https://stu.z-xin.net/api/homework"
 HOMEWORK_DETAIL_API_URL = "https://stu.z-xin.net/api/homework/detail"
@@ -32,7 +38,13 @@ HOMEWORK_ORDER_BY = "createTime"
 HOMEWORK_ORDER = "desc"
 
 COOKIE_FILE = "cookies.txt"
+QR_IMAGE_FILE = "zxin_qrcode.png"
 POLL_SECONDS = 5
+SCAN_POLL_SECONDS = 3
+
+
+class ApiError(RuntimeError):
+    pass
 
 
 class ApiError(RuntimeError):
@@ -105,6 +117,76 @@ def login(session: requests.Session, username: str, password: str) -> dict[str, 
     return data
 
 
+def _print_qr_ascii(url: str) -> None:
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    block = "  "
+    for row in matrix:
+        console.print("".join("  " if mod else "██" for mod in row), end="")
+        console.print()
+
+
+def wechat_qrcode_login(session: requests.Session) -> bool:
+    scene_id = str(uuid.uuid4())
+    console.print(f"[cyan]→[/cyan] 生成登录会话: {scene_id[:8]}...")
+
+    headers = {"Referer": f"{AUTH_HOST}/login"}
+    resp = session.get(f"{WECHAT_QRCODE_URL}/{scene_id}", headers=headers, timeout=15)
+    data = assert_api_ok(resp)
+    qr_data = data["data"]
+    qr_url = qr_data.get("url") or qr_data.get("ticket") or ""
+    expire_seconds = qr_data.get("expire_seconds", 180)
+    if not qr_url:
+        raise ApiError(f"二维码响应缺少 url 字段: {data!r}")
+
+    try:
+        img = qrcode.make(qr_url)
+        img.save(QR_IMAGE_FILE)
+    except Exception as exc:
+        console.print(f"[yellow]⚠ 保存 PNG 失败: {exc}[/yellow]")
+
+    console.print(Panel.fit(
+        "微信扫码登录\n请用微信扫描下方二维码（或打开图片/链接）",
+        border_style="green",
+    ))
+    _print_qr_ascii(qr_url)
+    console.print(f"[dim]PNG: {QR_IMAGE_FILE}[/dim]")
+    console.print(f"[dim]URL: {qr_url}[/dim]")
+    console.print(f"[dim]有效期: {expire_seconds}s[/dim]\n")
+
+    console.print("[cyan]等待扫码...[/cyan]")
+    start = time.time()
+    scanned = False
+    while True:
+        if time.time() - start > expire_seconds:
+            console.print("[red]✗ 二维码已过期，请重新登录[/red]")
+            return False
+        try:
+            resp = session.get(
+                WECHAT_LOGIN_CHECK_URL, params={"scene": scene_id}, headers=headers, timeout=15
+            )
+            data = resp.json()
+            code = data.get("code")
+            if code == 200:
+                console.print("[green]✓ 登录成功[/green]")
+                session.cookies.save(ignore_discard=True, ignore_expires=True)
+                console.print(f"[green]✓ cookie 已保存到 {COOKIE_FILE}[/green]")
+                return True
+            if code == 202:
+                if not scanned:
+                    console.print("\n[yellow]已扫码，请在手机上确认...[/yellow]")
+                    scanned = True
+            else:
+                console.print(".", end="")
+                sys.stdout.flush()
+        except requests.RequestException as exc:
+            console.print(f"\n[yellow]⚠ 轮询异常: {exc}[/yellow]")
+        time.sleep(SCAN_POLL_SECONDS)
+    return False
+
+
 def is_session_alive(session: requests.Session) -> bool:
     try:
         response = session.post(CLASSROOM_API_URL, json=CLASSROOM_PAYLOAD, timeout=20)
@@ -118,14 +200,28 @@ def is_session_alive(session: requests.Session) -> bool:
 
 
 def ensure_logged_in(
-    session: requests.Session, username: str, password: str
+    session: requests.Session, username: str | None, password: str | None
 ) -> None:
     if is_session_alive(session):
         console.print("[green]✓[/green] cookie 有效，跳过登录")
         return
-    console.print("[yellow]→[/yellow] cookie 失效，重新登录")
-    login(session, username, password)
-    console.print(f"[green]✓[/green] 登录成功，cookie 已保存到 {COOKIE_FILE}")
+    console.print("[yellow]→[/yellow] cookie 失效，请选择登录方式")
+    choice = select_item(
+        [
+            {"id": "1", "name": "微信扫码"},
+            {"id": "2", "name": "账号密码"},
+        ],
+        [("方式", lambda item: item["name"])],
+        "[bold cyan]请选择登录方式序号: [/bold cyan]",
+    )
+    if choice["id"] == "1":
+        if not wechat_qrcode_login(session):
+            raise RuntimeError("扫码登录失败")
+    else:
+        if not username or not password:
+            username, password = load_credentials()
+        login(session, username, password)
+        console.print(f"[green]✓[/green] 登录成功，cookie 已保存到 {COOKIE_FILE}")
 
 
 def get_classroom_data(session: requests.Session) -> list[dict]:
@@ -479,7 +575,8 @@ def print_banner() -> None:
 def main() -> int:
     print_banner()
     try:
-        username, password = load_credentials()
+        username = os.environ.get("ZXIN_USERNAME")
+        password = os.environ.get("ZXIN_PASSWORD")
         session = make_session()
         ensure_logged_in(session, username, password)
 

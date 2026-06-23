@@ -9,6 +9,10 @@ __pycache__/
 
 # 敏感文件（cookie 含登录凭证）
 cookies.txt
+zxin_session.json
+
+# 扫码登录生成的二维码图片
+zxin_qrcode.png
 
 # 系统/编辑器
 .DS_Store

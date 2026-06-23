@@ -315,12 +315,23 @@ class TestEnsureLoggedIn:
         assert called["alive"] is True
         assert called["login"] is False
 
-    def test_logs_in_when_dead(self, monkeypatch):
+    def test_logs_in_when_dead_password(self, monkeypatch):
         called = {"login": 0}
         monkeypatch.setattr(main, "is_session_alive", lambda s: False)
+        monkeypatch.setattr(main, "select_item", lambda *a, **k: {"id": "2", "name": "账号密码"})
         monkeypatch.setattr(main, "login", lambda *a: called.__setitem__("login", called["login"] + 1) or {"ok": True})
         ensure_logged_in = main.ensure_logged_in
         ensure_logged_in(MagicMock(), "u", "p")
+        assert called["login"] == 1
+
+    def test_logs_in_when_dead_no_credentials(self, monkeypatch):
+        called = {"login": 0}
+        monkeypatch.setattr(main, "is_session_alive", lambda s: False)
+        monkeypatch.setattr(main, "select_item", lambda *a, **k: {"id": "2", "name": "账号密码"})
+        monkeypatch.setattr(main, "load_credentials", lambda: ("loaded_u", "loaded_p"))
+        monkeypatch.setattr(main, "login", lambda *a: called.__setitem__("login", called["login"] + 1) or {"ok": True})
+        ensure_logged_in = main.ensure_logged_in
+        ensure_logged_in(MagicMock(), None, None)
         assert called["login"] == 1
 
 
