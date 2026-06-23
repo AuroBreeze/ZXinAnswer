@@ -1,7 +1,5 @@
 # zxin 作业助手
 
-知新芸（z-xin.net）教学平台作业自动答题脚本，基于 Clean Architecture。
-
 ## 功能
 
 - **账号密码登录**：支持环境变量 `ZXIN_USERNAME` / `ZXIN_PASSWORD` 自动登录，也支持手动输入
