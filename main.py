@@ -4,6 +4,13 @@ import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+
+# 确保终端能输出 Unicode（◌"▀▄█"等二维码半块字符）
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, RuntimeError):
+    pass
 from http.cookiejar import MozillaCookieJar
 from typing import Any, Callable
 
@@ -122,9 +129,22 @@ def _print_qr_ascii(url: str) -> None:
     qr.add_data(url)
     qr.make(fit=True)
     matrix = qr.get_matrix()
-    block = "  "
-    for row in matrix:
-        console.print("".join("  " if mod else "██" for mod in row), end="")
+    # 合并两行为一行：用半块字符 ▀▄█ 将高度减半，宽度也用单字符减半
+    # 上黑下黑=█  上黑下白=▀  上白下黑=▄  上白下白=空格
+    for y in range(0, len(matrix), 2):
+        line = []
+        for x in range(len(matrix[0])):
+            top = matrix[y][x]
+            bot = matrix[y + 1][x] if y + 1 < len(matrix) else False
+            if top and bot:
+                line.append("█")
+            elif top:
+                line.append("▀")
+            elif bot:
+                line.append("▄")
+            else:
+                line.append(" ")
+        console.print("".join(line), end="")
         console.print()
 
 
