@@ -1,6 +1,6 @@
 """答题用例 — 暴力遍历选项，找到正确答案。"""
 
-from domain.entities import AnswerResult, Question
+from domain.entities import AnswerResult, AnswerSummary, Question
 from domain.ports import HomeworkPort, PresenterPort
 
 
@@ -22,17 +22,17 @@ class AnswerUseCase:
                 return option.mark, result
         return None, last_result
 
-    def answer_all(self, session, homework_id: str, questions: list[Question]) -> list[dict]:
+    def answer_all(self, session, homework_id: str, questions: list[Question]) -> list[AnswerSummary]:
         results = []
         total = len(questions)
         for index, question in enumerate(questions, start=1):
             self.presenter.show_question(question, index, total)
             mark, result = self._submit_until_correct(session, homework_id, question)
             self.presenter.show_answer_result(mark)
-            results.append({
-                "question_index": question.question_index,
-                "mark": mark,
-                "is_correct": mark is not None,
-            })
+            results.append(AnswerSummary(
+                question_index=question.question_index,
+                mark=mark,
+                is_correct=mark is not None,
+            ))
         self.presenter.show_summary(results)
         return results

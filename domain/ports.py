@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import requests
 
-from domain.entities import AnswerResult, Course, Homework, Question
+from domain.entities import AnswerResult, AnswerSummary, Course, Homework, Question
 
 
 class AuthPort(ABC):
@@ -70,10 +70,10 @@ class PresenterPort(ABC):
     def show_answer_result(self, mark: str | None) -> None: ...
 
     @abstractmethod
-    def show_summary(self, results: list[dict]) -> None: ...
+    def show_summary(self, results: list[AnswerSummary]) -> None: ...
 
     @abstractmethod
-    def prompt(self, message: str) -> str: ...
+    def prompt(self, message: str, password: bool = False) -> str: ...
 
     @abstractmethod
     def show_new_question(self, question: Question) -> None: ...

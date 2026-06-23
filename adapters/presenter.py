@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from domain.entities import AnswerResult, Question
+from domain.entities import AnswerResult, AnswerSummary, Question
 from domain.exceptions import ExitRequested
 
 console = Console()
@@ -138,7 +138,7 @@ class ConsolePresenter:
         else:
             console.print(f"  [red]✗ 未找到正确答案[/red]")
 
-    def show_summary(self, results: list[dict]) -> None:
+    def show_summary(self, results: list[AnswerSummary]) -> None:
         table = Table(
             title="[bold]答题汇总[/bold]",
             show_header=True,
@@ -150,10 +150,10 @@ class ConsolePresenter:
         table.add_column("状态")
         success_count = 0
         for result in results:
-            qidx = str(result.get("question_index", "?"))
-            if result["mark"]:
+            qidx = str(result.question_index)
+            if result.mark:
                 success_count += 1
-                table.add_row(qidx, result["mark"], "[green]✓ 正确[/green]")
+                table.add_row(qidx, result.mark, "[green]✓ 正确[/green]")
             else:
                 table.add_row(qidx, "-", "[red]✗ 未找到[/red]")
         console.print()
@@ -172,8 +172,8 @@ class ConsolePresenter:
             f"失败 {total - success_count}[/{color}]"
         )
 
-    def prompt(self, message: str) -> str:
-        return console.input(message).strip()
+    def prompt(self, message: str, password: bool = False) -> str:
+        return console.input(message, password=password).strip()
 
     def show_new_question(self, question: Question) -> None:
         qidx = question.question_index

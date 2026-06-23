@@ -5,7 +5,6 @@ import time
 import config
 from domain.entities import Question
 from domain.ports import HomeworkPort, PresenterPort
-from adapters.presenter import _strip_html
 
 
 class WaitLatestUseCase:

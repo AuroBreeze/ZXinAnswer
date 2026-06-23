@@ -55,7 +55,7 @@ class LoginUseCase:
     def _login_password_interactive(self, session) -> None:
         while True:
             username = self.presenter.prompt("[bold cyan]请输入用户名: [/bold cyan]")
-            password = self.presenter.prompt("[bold cyan]请输入密码: [/bold cyan]")
+            password = self.presenter.prompt("[bold cyan]请输入密码: [/bold cyan]", password=True)
             if not username or not password:
                 self.presenter.warning("用户名或密码不能为空")
                 continue

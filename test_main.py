@@ -11,7 +11,7 @@ import config
 from adapters.auth_api import assert_api_ok
 from adapters.homework_api import HomeworkApiAdapter
 from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _strip_html
-from domain.entities import AnswerResult, Course, Homework, Question, QuestionOption
+from domain.entities import AnswerResult, AnswerSummary, Course, Homework, Question, QuestionOption
 from domain.exceptions import ApiError, AuthenticationError, ExitRequested, HomeworkError
 from use_cases.answer import AnswerUseCase
 from use_cases.homework import HomeworkUseCase
@@ -280,8 +280,8 @@ class TestAnswerUseCase:
         question = Question("q1", 1, "content", [QuestionOption("A"), QuestionOption("B")])
         results = uc.answer_all(MagicMock(), "h1", [question])
         assert len(results) == 1
-        assert results[0]["mark"] == "B"
-        assert results[0]["is_correct"] is True
+        assert results[0].mark == "B"
+        assert results[0].is_correct is True
 
 
 # ===== use_cases.login.LoginUseCase =====
