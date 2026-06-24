@@ -38,6 +38,12 @@ def select_mode(presenter: ConsolePresenter) -> dict | None:
     )
 
 
+def answer_homeworks(session, homework_uc: HomeworkUseCase, answer_uc: AnswerUseCase, homeworks) -> None:
+    for homework in homeworks:
+        questions = homework_uc.get_questions(session, homework.id)
+        answer_uc.answer_all(session, homework.id, questions)
+
+
 def main() -> int:
     presenter = ConsolePresenter()
     cookies = CookieStoreAdapter()
@@ -63,11 +69,10 @@ def main() -> int:
                 if mode is None:
                     break
                 if mode["id"] == "1":
-                    homework = homework_uc.select_homework(session, course.id)
-                    if homework is None:
+                    homeworks = homework_uc.select_homeworks(session, course.id)
+                    if homeworks is None:
                         continue
-                    questions = homework_uc.get_questions(session, homework.id)
-                    answer_uc.answer_all(session, homework.id, questions)
+                    answer_homeworks(session, homework_uc, answer_uc, homeworks)
                     while True:
                         again = presenter.prompt(
                             "[bold cyan]再答一份? (Enter 继续, b 返回模式选择, q 退出): [/bold cyan]"
@@ -76,11 +81,10 @@ def main() -> int:
                             return 0
                         if again == "b":
                             break
-                        homework = homework_uc.select_homework(session, course.id)
-                        if homework is None:
+                        homeworks = homework_uc.select_homeworks(session, course.id)
+                        if homeworks is None:
                             break
-                        questions = homework_uc.get_questions(session, homework.id)
-                        answer_uc.answer_all(session, homework.id, questions)
+                        answer_homeworks(session, homework_uc, answer_uc, homeworks)
                     if again == "q":
                         return 0
                     continue

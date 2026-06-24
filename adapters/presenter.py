@@ -52,6 +52,44 @@ def _deadline_cell(homework_dict: dict) -> Text:
     return Text(_format_time(homework_dict.get("deadline")), style="green")
 
 
+def _parse_selection_indexes(value: str, item_count: int) -> list[int]:
+    value = value.strip()
+    if not value:
+        raise ValueError("empty selection")
+
+    indexes: list[int] = []
+    seen: set[int] = set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            raise ValueError("empty selection token")
+        if "-" in token:
+            parts = token.split("-")
+            if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                raise ValueError("invalid range")
+            start = int(parts[0])
+            end = int(parts[1])
+            if start > end:
+                raise ValueError("reversed range")
+            numbers = range(start, end + 1)
+        else:
+            if not token.isdigit():
+                raise ValueError("invalid index")
+            numbers = [int(token)]
+
+        for number in numbers:
+            if number < 1 or number > item_count:
+                raise ValueError("index out of range")
+            index = number - 1
+            if index not in seen:
+                seen.add(index)
+                indexes.append(index)
+
+    if not indexes:
+        raise ValueError("empty selection")
+    return indexes
+
+
 def _progress_text(result: AnswerResult) -> str:
     return (
         f"本题 {result.question_score} · "
@@ -113,6 +151,39 @@ class ConsolePresenter:
                 if 1 <= index <= len(items):
                     return items[index - 1]
             console.print("[red]请输入有效序号[/red]")
+
+    def select_items(
+        self,
+        items: list[dict],
+        columns: list[tuple[str, Callable[[dict], object]]],
+        prompt: str,
+        allow_back: bool = False,
+    ) -> list[dict] | None:
+        hints = []
+        if allow_back:
+            hints.append("b 返回")
+        hints.append("q 退出")
+        hint_str = "  [dim](" + ", ".join(hints) + ")[/dim]"
+        table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=False)
+        table.add_column("#", style="cyan", justify="right", width=3)
+        for header, _ in columns:
+            table.add_column(header)
+        for index, item in enumerate(items, start=1):
+            row = [str(index)] + [col[1](item) for col in columns]
+            table.add_row(*row)
+        console.print(table)
+        while True:
+            value = console.input(prompt + hint_str + " ").strip()
+            if value.lower() == "q":
+                raise ExitRequested()
+            if allow_back and value.lower() in ("b", "0"):
+                return None
+            try:
+                indexes = _parse_selection_indexes(value, len(items))
+            except ValueError:
+                console.print("[red]请输入有效序号，示例: 1,3-5,8[/red]")
+                continue
+            return [items[index] for index in indexes]
 
     def show_question(self, question: Question, index: int, total: int) -> None:
         qidx = question.question_index

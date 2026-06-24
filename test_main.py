@@ -10,7 +10,7 @@ from rich.text import Text
 import config
 from adapters.auth_api import assert_api_ok
 from adapters.homework_api import HomeworkApiAdapter
-from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _strip_html
+from adapters.presenter import ConsolePresenter, _deadline_cell, _format_time, _parse_iso, _parse_selection_indexes, _strip_html
 from domain.entities import AnswerResult, AnswerSummary, Course, Homework, Question, QuestionOption
 from domain.exceptions import ApiError, AuthenticationError, ExitRequested, HomeworkError
 from use_cases.answer import AnswerUseCase
@@ -199,6 +199,28 @@ class TestDeadlineCell:
         assert "green" in str(cell.style)
 
 
+class TestParseSelectionIndexes:
+    def test_single_index(self):
+        assert _parse_selection_indexes("2", 5) == [1]
+
+    def test_comma_separated(self):
+        assert _parse_selection_indexes("1,3,5", 5) == [0, 2, 4]
+
+    def test_range(self):
+        assert _parse_selection_indexes("2-4", 5) == [1, 2, 3]
+
+    def test_mixed_input(self):
+        assert _parse_selection_indexes("1,3-5,2", 5) == [0, 2, 3, 4, 1]
+
+    def test_deduplicates_preserving_order(self):
+        assert _parse_selection_indexes("2,2,1-3", 5) == [1, 0, 2]
+
+    @pytest.mark.parametrize("value", ["", "0", "6", "a", "1,,2", "3-1", "1-a"])
+    def test_invalid_input(self, value):
+        with pytest.raises(ValueError):
+            _parse_selection_indexes(value, 5)
+
+
 # ===== HomeworkApiAdapter =====
 
 class TestHomeworkApiAdapter:
@@ -243,6 +265,35 @@ class TestHomeworkApiAdapter:
         adapter = HomeworkApiAdapter()
         with pytest.raises(HomeworkError, match="没有题目"):
             adapter.get_homework_detail(session, "h1")
+
+
+class TestHomeworkUseCaseSelectHomeworks:
+    def test_select_homeworks_returns_multiple_entities(self):
+        api = MagicMock()
+        api.get_homeworks.return_value = [
+            Homework("h1", "HW1", 0, 0, None, None),
+            Homework("h2", "HW2", 0, 0, None, None),
+            Homework("h3", "HW3", 0, 0, None, None),
+        ]
+        presenter = MagicMock()
+        presenter.select_items.return_value = [
+            {"id": "h3", "name": "HW3", "score": 0, "progress": 0, "create_time": None, "deadline": None},
+            {"id": "h1", "name": "HW1", "score": 0, "progress": 0, "create_time": None, "deadline": None},
+        ]
+        uc = HomeworkUseCase(api, presenter)
+
+        result = uc.select_homeworks(MagicMock(), "c1")
+
+        assert [homework.id for homework in result] == ["h3", "h1"]
+
+    def test_select_homeworks_returns_none_on_back(self):
+        api = MagicMock()
+        api.get_homeworks.return_value = [Homework("h1", "HW1", 0, 0, None, None)]
+        presenter = MagicMock()
+        presenter.select_items.return_value = None
+        uc = HomeworkUseCase(api, presenter)
+
+        assert uc.select_homeworks(MagicMock(), "c1") is None
 
 
 # ===== use_cases.wait.WaitLatestUseCase =====
@@ -401,6 +452,31 @@ class TestSelectItemExit:
         assert result is None
 
 
+class TestSelectItems:
+    def test_selects_multiple_items(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["1,3"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        items = [{"id": "1"}, {"id": "2"}, {"id": "3"}]
+        result = presenter.select_items(items, [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result == [{"id": "1"}, {"id": "3"}]
+
+    def test_back_returns_none(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["b"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        result = presenter.select_items([{"id": "1"}], [("id", lambda x: x["id"])], "prompt", allow_back=True)
+        assert result is None
+
+    def test_invalid_then_valid(self, monkeypatch):
+        presenter = ConsolePresenter()
+        inputs = iter(["9", "2"])
+        monkeypatch.setattr("adapters.presenter.console.input", lambda *a, **k: next(inputs))
+        items = [{"id": "1"}, {"id": "2"}]
+        result = presenter.select_items(items, [("id", lambda x: x["id"])], "prompt")
+        assert result == [{"id": "2"}]
+
+
 # ===== LoginUseCase.logout =====
 
 class TestLoginUseCaseLogout:
@@ -454,3 +530,26 @@ class TestCookieStoreClear:
         session.cookies = MagicMock()
         adapter.clear(session, cookie_file)
         assert not os.path.exists(cookie_file)
+
+
+def test_answer_homeworks_runs_selected_homeworks_serially():
+    from main import answer_homeworks
+
+    session = MagicMock()
+    homework_uc = MagicMock()
+    answer_uc = MagicMock()
+    homeworks = [
+        Homework("h1", "HW1", 0, 0, None, None),
+        Homework("h2", "HW2", 0, 0, None, None),
+    ]
+    homework_uc.get_questions.side_effect = [
+        [Question("q1", 1, "", [])],
+        [Question("q2", 1, "", [])],
+    ]
+
+    answer_homeworks(session, homework_uc, answer_uc, homeworks)
+
+    assert homework_uc.get_questions.call_args_list[0].args == (session, "h1")
+    assert homework_uc.get_questions.call_args_list[1].args == (session, "h2")
+    assert answer_uc.answer_all.call_args_list[0].args[1] == "h1"
+    assert answer_uc.answer_all.call_args_list[1].args[1] == "h2"
