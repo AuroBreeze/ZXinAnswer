@@ -96,3 +96,11 @@ class CookiePort(ABC):
 
     @abstractmethod
     def clear(self, session: requests.Session, filepath: str) -> None: ...
+
+
+class MessagePort(ABC):
+    @abstractmethod
+    def get_unread_count(self, session: requests.Session) -> int: ...
+
+    @abstractmethod
+    def get_messages(self, session: requests.Session, page_num: int = 1, page_size: int = 20) -> list[dict]: ...

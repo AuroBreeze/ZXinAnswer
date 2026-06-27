@@ -16,6 +16,7 @@ import requests
 from adapters.auth_api import AuthApiAdapter
 from adapters.cookie_store import CookieStoreAdapter
 from adapters.homework_api import HomeworkApiAdapter
+from adapters.message_api import MessageApiAdapter
 from adapters.presenter import ConsolePresenter
 from adapters.qr import QRGeneratorAdapter
 from domain.exceptions import ApiError, AuthenticationError, ExitRequested
@@ -54,7 +55,8 @@ def main() -> int:
     login_uc = LoginUseCase(auth_api, cookies, presenter)
     homework_uc = HomeworkUseCase(homework_api, presenter)
     answer_uc = AnswerUseCase(homework_api, presenter)
-    wait_uc = WaitLatestUseCase(homework_api, presenter)
+    message_api = MessageApiAdapter()
+    wait_uc = WaitLatestUseCase(homework_api, presenter, message_api)
 
     presenter.show_banner()
     try:

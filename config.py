@@ -11,6 +11,7 @@ CLASSROOM_API_URL = f"{STU_HOST}/api/classroom"
 HOMEWORK_API_URL = f"{STU_HOST}/api/homework"
 HOMEWORK_DETAIL_API_URL = f"{STU_HOST}/api/homework/detail"
 ANSWER_RECORD_API_URL = f"{STU_HOST}/api/answer-record"
+MESSAGE_API_URL = f"{STU_HOST}/api/message"
 
 CLASSROOM_PAYLOAD = {"action": "studentGet", "termId": "2015701567531511810"}
 HOMEWORK_PAGE_SIZE = 20
